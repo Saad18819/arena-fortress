@@ -1,127 +1,126 @@
-# The manager's office gets its chair on every task
+# The fort's own food while a caravan visits, and the manager's office chair on every task
 
 ## In short
 
-This submission is 0xplemonade's promoted harness (65e60732, the current leader) with one change: the steps that
-give the manager an office. From about 20 citizens Dwarf Fortress validates no work order until the manager has an
-office zone with a built chair, assigned to them (the game API manual records this as measured in game). The order
-for the office's own chair is a work order too, so a fort that reaches 20 citizens without that chair in place can
-not get it any more: from then on no new order is validated at all.
+This submission is 0xplemonade's promoted harness (65e60732, the current leader) with two changes to the
+deterministic layer in `submission/overseer/harness.py`:
 
-I found this in a local full-year game where it cost the last 128 days of the year. The change makes the office
-land on floor that can take a chair, puts the chair in as soon as the zone exists on every task, and recovers when
-an office's site refuses its chair.
+1. **New here: plan from the fort's own food and drink while a caravan visits.** While merchants are on the map,
+   `stocks.food_edible` and `stocks.drink` count their goods. 0xplemonade reported this (issue #125, discussion #173
+   item 1, #175 item 8) and suggested not planning from the stocks while the merchants are there. In every one of my
+   local games the food count rose by 155 to 304 on the arrival report and fell back to 0-22 within days of the
+   departure report, so the layer's hunger rule read the caravan's food for about a month while the fort's own ran
+   down. The layer now takes the goods off what it plans from.
+2. **Carried over from my first submission (9ac76e40): the manager's office gets its chair on every task.** From
+   about 20 citizens DF validates no order until the manager has an office with a built chair. 0xplemonade found this
+   deadlock first (#173 items 20 and 26, #174, PR 145 `bbd7752f`); mine is an independent implementation with a
+   step that gives up and moves an office whose site refuses its chair.
 
-**This is not a new finding.** 0xplemonade found the same deadlock first and wrote it up in discussion #173 (item 26,
-"From about 20 citizens the manager validates no orders without an office chair", and item 20, an office over a farm
-level whose chair got `no_space` at every try), listed it as test triggers in #175 (items 4 and 12), and shipped an
-office set up from the start, on a dug room, never on a farm level, with its chair first, in PR 145 (`bbd7752f`, see
-#174). I read those threads after diagnosing my own game. This submission is an independent implementation of the
-same idea on top of the leader's code, with one addition: an office whose site still refuses its chair is given up,
-handed to another citizen, and made again elsewhere. No code is taken from `bbd7752f`.
+My first submission (9ac76e40) played stage 1 only, as a new account's first submission does: stage-1 point 105.06
+(bounds 101.87-106.66), labs 116.65, MY1 97.3 with one game of eight at tier 0. This one adds the caravan change and
+plays the full suite.
 
-## What I saw
+## 1. A caravan's goods
 
-I ran the leader's harness locally with `runner/dfbench local run --stack mixed` (the real game with the fake model,
-so only the deterministic controller in `overseer/` makes decisions) on the public OP1 start fort, seed 12345, twice.
+### What I saw
 
-| game | citizens at day 336 | Hamlet | placed beds | O | tier |
-|---|---|---|---|---|---|
-| OP1-0 | 13 | no | 15 | 87.5 | 3 |
-| OP1-1 | 21 | day 209 | 19 | 89.7 | 3 |
+Every local game I ran (six full-year and four mid-year games, `runner/dfbench local run --stack mixed`, the real
+game with the fake model) had one caravan. From the games' own records (`*.api.jsonl`, the arrival and departure
+reports in `recent_events`):
 
-OP1-1 missed G4 (placed beds >= citizens) by two beds. Following the game's own records:
+| game | arrives | food before -> with goods | departure report | food after |
+|---|---|---|---|---|
+| OP1, leader's code | day 166 | 19 -> 174 | day 198 | 16 |
+| OP1, leader's code | day 162 | 18 -> 219 | day 194 | 3 |
+| OP1, office build | day 162 | 17 -> 257 | day 194 | 6 |
+| OP1, office build | day 169 | 10 -> 268 | day 196 | 7 |
+| MY1, office build | day 47 | 8 -> 312 | day 75 | 0 |
+| MY1, office build | day 47 | 23 -> 218 | day 81 | 22 |
 
-- Day 117, 16 citizens: `office()` made the office with `make_zone office` over site A4, a 7x3 A site at z 105
-  (88,92) with no open floor, then assigned it to the manager on day 118.
-- Days 129-148: `place_furniture chair` on A4 was answered six times with `no_space`: "no free floor tile in
-  88,92,105 (7x3): every tile is wall, undug, built on or designated". The `office_chair` key then ran out of
-  attempts. Two free chairs waited from day 148.
-- Day 208: the second migrant wave brought the fort to 21 citizens; the furnishing step placed the two free chairs in
-  the dining hall and queued 5 beds, 3 tables and 3 chairs (orders 14-16).
-- Day 210 to the end: orders 14-16 stayed `validated: false, active: false`. So did every order added afterwards:
-  the daily brew, barrel and meal orders queued on day 273 (orders 17-19) and a meal order on day 329 (order 20). The
-  manager's office reported `{"chair": false}` throughout. Beds stayed at 19 for 21 citizens for 128 days.
+The inherited hunger cull (`provision()` in `overseer/openplay.py`) marks one small animal when edible food is below
+a quarter of a ration per citizen (at least 3). With 150 to 300 of the caravan's food in the count it cannot fire
+during the visit, whatever the fort's own food does. In the MY1 game above, the fort had 8 food of its own on the
+day the merchants arrived and 0 four days after they left; the cull fired on that day and the Butchers was built then.
 
-In OP1-0, which stayed at 13 citizens, every order was validated within two days. The orders already standing before
-day 210 kept running, so drink and food held, and supply and wellbeing still scored 1.0 in that game. A fort whose
-standing brew or meal order finishes, or needs replacing, after the lock would have no way to queue another one.
+### What changed
 
-Why the office went there: the inherited `office()` picks `self.dug_rooms("office") + self.dug_rooms("dine") +
-self.kind("A")` and takes the first. No room had those roles, so it took the first A site, whatever its open floor.
-When the chair was refused it kept retrying the same site. The chair was placed straight after `make_zone` only on
-the migrant task (`self.surge`), and the extra office chair was ordered only through the bed-only queue of the
-migrant task (`beds_first`).
+`Overseer.load()` now passes the stocks through `own_stocks()`:
 
-## What changed
+- On the observation that first lists an arrival report ("The merchants need a trade depot to unload their goods.",
+  or a caravan or merchants "have arrived"), the goods are what `food_edible` and `drink` rose by since the previous
+  observation.
+- That much is taken off both, for every rule in the layer that reads them: the hunger cull, the feast's raw-food
+  count, the wildlife lockdown's supply floor, the first felling's supply floor, the endgame checks.
+- It stops when the game's count falls below the goods (they are gone), `CARAVAN_LEFT = 3` days after a departure
+  report ("The merchants from ... have embarked on their journey."), or after `CARAVAN_DAYS = 40` days. An arrival
+  report is not taken a second time within 40 days.
+- The game's own figures stay in the stocks as `food_reported` and `drink_reported`. Nothing else changes: the model
+  loop's digest, and the conditions on manager orders (which the game itself evaluates), see the game's counts.
 
-All in `submission/overseer/harness.py`:
+### What I measured
 
-1. **Where a new office goes** (`office_site()`): a dug office or dining room as before; else an A site with
-   `open_tiles > 0`, preferring one that no dining hall or dormitory covers (an office laid over the dining hall would
-   take its chairs as the office's), then the most open tiles. A site an office was given up on is skipped.
-2. **The chair right away, on every task**: after an accepted `make_zone office`, a free chair is placed in it on
-   every task, not only the migrant task. This is i34-9's office-first sequence (fa9c13cc), which the leader kept
-   behind the migrant flag.
-3. **Recovery** (`office_chair()`, `drop_office()`): a chair refused with `no_space` counts against that office;
-   after `OFFICE_FAILS = 2` refusals the office is given up. If the manager still owns it, it is assigned to an
-   adult citizen with no position, so the manager has no office on the next look, and a new one is made on another
-   site and given its chair. A given-up office is never assigned back to the manager. If nobody can take it over, a
-   new office is made beside it.
-4. **The chair is ordered on every task**: when the manager's office has no chair and no chair is free,
-   `supply()` queues one `make_chair` (the leader did this only in the migrant task's bed-only queue). It uses the
-   leader's own `office_chair_needed()` test, so it stops as soon as a chair is free or placed.
+Unit tests: `tests/test_caravan.py` (7 tests) uses a recorded game's numbers: the goods are taken off from arrival to
+departure; the hunger cull fires on the fort's own 2 food while the count shows 203; a harvest or a feast (a jump
+with no arrival report) is not a caravan; goods gone without a report, or a visit past 40 days, end it; the same
+report is not taken twice; an observation without readable stocks changes nothing.
 
-Nothing else in `submission/` changes apart from a new section at the top of `submission/README.md`, the new test
-file and the dependency declaration. No prompt, model-loop, digest or open-play rule is touched.
+Local games with this build (`--stack mixed`, public forts):
 
-## What I measured
-
-Unit tests: `tests/test_office.py` (5 tests) replays the recorded failure on a stub game: the no-floor site, two
-refusals, the hand-over to a citizen with no position, the new office on open floor and its chair. It also checks
-that a new office prefers open floor away from the dining hall, that the dining level is only the last choice, and
-that nothing happens below 14 citizens or once a chair is in. All 28 tests in `tests/` pass.
-
-Local games with this build, all `--stack mixed` (real DF 53.16, fake model), public forts:
-
-| task | game | citizens | office chair in by | orders validated after 20 citizens | O | tier |
+| task | game | caravan seen | goods taken off | ended | O | tier |
 |---|---|---|---|---|---|---|
-| OP1 | 0 | 13 | (never needed) | (never reached 20) | 87.5 | 3 |
-| OP1 | 1 | 12 | (never needed) | (never reached 20) | 87.5 | 3 |
-| MY1 handover | 0 | 14 -> 21 on day 64 | day 4 | all | 100.0 | 4 |
-| MY1 handover | 1 | 16 -> 21 on day 90 | day 4 | all | 100.0 | 4 |
+| MY1 handover | 0 | day 47 | 205 food, 48 drink | day 75 | 100.0 | 4 |
+| MY1 handover | 1 | day 46 | 260 food, 25 drink | day 78 | 100.0 | 4 |
+| OP1 | 0 | day 166 | 278 food, 75 drink | day 193 | 85.0 | 3 |
+| OP1 | 1 | day 172 | 240 food, 22 drink | day 202 | 87.5 | 3 |
 
-In both MY1 games the office was made on day 0 on open floor, its chair was planned in the same pass, and the
-manager's office reported `chair: true` from day 4. Every order queued after the fort passed 20 citizens was
-validated within 0-9 days.
+Every arrival and every departure was detected. No game had a death. In both OP1 games a hunger cull fired during
+the visit on the fort's own food: day 184 in game 0 (0 of its own, about 280 in the count) and day 195 in game 1 (2
+of its own, about 240 in the count). The inherited rule could not have fired there. In OP1 game 0 one citizen was
+stressed from day 142, before the caravan arrived on day 166 and so before this change could act; wellbeing 0.933.
+
+### What this does not fix
+
+Food still reached 0 for a day in three of these four games, each time weeks after the merchants had left: the
+fort's own food sat in single digits to about 30 for 14 to 20 citizens for weeks and the cull waited until it was
+gone. That
+is the inherited threshold (a quarter of a ration per citizen), which the leader's own comment says was set low so
+that the herd lasts until the final feast. I did not change it: four games cannot tell whether a higher trigger
+helps the final stretch or empties the herd too early.
+
+## 2. The manager's office (from 9ac76e40)
+
+In a local full-year game of the leader's code the office was made over a 7x3 level with no open floor (site A4).
+Its chair was refused six times with `no_space`; the free chairs went to the dining hall; and from day 210, at 21
+citizens, no bed, chair, brew or meal order was validated for the last 128 days. The fort ended two beds short of
+G4.
+
+- A new office goes on a dug office or dining room, else an A site with open floor, one that no dining hall or
+  dormitory covers first. A site an office was given up on is not used again.
+- The chair is placed as soon as the office zone exists, on every task (the leader did this on the migrant task).
+- An office whose site refuses its chair twice (`no_space`) is handed to a citizen with no position and made again
+  elsewhere.
+- One chair is ordered when the manager's office has none and none is free, on every task.
+
+`tests/test_office.py` (5 tests) replays that game on a stub. In two local MY1 games (14 and 16 citizens, reaching 21)
+the office had its chair from day 4 and every order queued after 20 citizens was validated. The recovery path ran
+only on the stub game.
 
 ## What I did not measure
 
-- No local run used the real model: I had no model key. The fake-model runs exercise the controller only.
-- The recovery path (giving up an office) ran only on the stub game. None of my four local games with this build
-  put an office on a site with no floor, so it was not triggered in game.
-- Two OP1 games and two MY1 games are far too few to show a score difference. The MY1 games may have scored 100
-  with the leader's code as well; I did not run the leader on MY1 for comparison. This is a robustness fix for a
-  failure I recorded, not a measured score gain.
-- Migrant waves vary: the two OP1 games here reached only 12-13 citizens, so the office rule never applied in them.
-
-## Something I noticed but did not change
-
-In one OP1 game with this build, edible food (`food_edible`) fell to 4-6 between days 224 and 280 with 12 citizens, recovering
-with the autumn harvest (194 at day 336). The leader's official run lists two OP1 games at tier 1 out of 16. I
-cannot see the official games, but a summer food dip like this one is a candidate for some of those. I left it alone
-here so that this submission changes one thing.
+- No local run used the real model (I had no model key): every game above is the controller with the fake model.
+- Ten local games in all, four with this exact build. That shows the changes run and do what they are meant to;
+  it cannot show a score difference (0xplemonade's #174 puts that at hundreds of games per build).
+- I did not run the leader's code on MY1 for comparison.
 
 ## Credit
 
 - 0xplemonade's 65e60732 is the starting implementation, taken whole. Its declared lineage is kept in
-  `dependencies.json`, except two entries its own file marks as adding no mechanism (514f4ac8, 44352f28), left out
-  to stay within the 20-entry cap; they remain declared by 65e60732.
-- The idea of setting the office up on floor that takes a chair, chair first, is 0xplemonade's: discussions #173
-  (items 20 and 26), #174 and #175 (items 4 and 12), and their PR 145 (`bbd7752f`, declared in `dependencies.json`
-  as an idea source; no code taken). The diagnosis and the measurements in this note are from my own local games.
-- The office rule this changes is the leader's `office()`, which carries i34-9's office-first chair placement
-  (fa9c13cc) and GordoAR's earlier office repair (5dfdcf15). Both are in the retained declarations.
-- The measured rule that DF stops validating orders from about 20 citizens without an office with a chair is from the
-  challenge's game API manual (`gameapi/manual/MANUAL.md`, "The manager's office").
-- The diagnosis used the challenge's own run artifacts (`*.api.jsonl`, `*.daily.json`) from local mixed-stack games.
+  `dependencies.json`, except three entries its own file marks as retained lineage adding no mechanism (514f4ac8,
+  44352f28, aebddb9d), left out to stay within the 20-entry cap; they remain declared by 65e60732.
+- The caravan problem and the workaround (don't plan from the stocks while merchants are on the map) are
+  0xplemonade's: issue #125, discussion #173 item 1 and #175 item 8. The detection from the reports, the jump as the
+  goods' size and the end conditions are this submission's.
+- The office idea is 0xplemonade's too: discussions #173 (items 20 and 26), #174 and #175 (items 4 and 12), and PR
+  145 (`bbd7752f`, declared as an idea source; no code taken). The office code is from my 9ac76e40, declared.
+- The measured office rule (about 20 citizens) is from the challenge's game API manual (`gameapi/manual/MANUAL.md`).
+- Every diagnosis and number above comes from my own local games and the challenge's run artifacts.

@@ -1,6 +1,15 @@
-# The manager's office gets its chair on every task
+# The fort's own food while a caravan visits
 
-This build is 0xplemonade's leader (65e60732) with one change, to the manager's office in overseer/harness.py.
+While merchants are on the map, stocks.food_edible and stocks.drink count their goods (0xplemonade's issue #125,
+discussion #173 item 1). In every local game the food count rose by 155-304 on the arrival report and fell to 0-22
+within days of the departure report, so the hunger cull read the caravan's food for a month. `Overseer.own_stocks()`
+(called from `load()`) takes the jump seen on the arrival report off food and drink until the goods leave the count,
+up to 3 days after the departure report, or 40 days in all; the game's figures stay as `food_reported` and
+`drink_reported`. Tests: `tests/test_caravan.py`.
+
+# The manager's office gets its chair on every task (from 9ac76e40)
+
+This build is 0xplemonade's leader (65e60732) with this change and the caravan change above, in overseer/harness.py.
 From about 20 citizens DF validates no work order until the manager has an office with a built chair, and that
 includes the order for the chair itself. In a local full-year game the office was made over a 7x3 level with no
 open floor; its chair was refused six times for want of floor, the free chairs then went to the dining hall, and
