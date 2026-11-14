@@ -20,6 +20,7 @@ don't fit the dorm go to the next-largest dug area, and the model's advances are
 """
 import json
 import math
+import re
 import sys
 import time
 
@@ -60,6 +61,16 @@ SURGE_DORM_DEPTH = 3
 
 OFFICE_FAILS = 2        # chair placements an office's site refused for want of floor (no_space) before the office
                         #   is given up: handed to another citizen and made again on a site with open floor
+
+# A visiting caravan's goods count in stocks.food_edible and stocks.drink while the merchants are on the map (the
+# challenge's known issue #125, listed by 0xplemonade in discussion #173 item 1). In six local games the food count
+# jumped by 155 to 304 on the arrival report and fell back within a day of the departure report, 25 to 34 days later,
+# to 0-22 for 12-21 citizens: the fort's own food had run down unseen, because every food rule read the caravan's.
+CARAVAN_ARRIVE = re.compile(r"merchants need a trade depot|merchants from .* (have arrived|are here)"
+                            r"|caravan from .* has arrived", re.I)
+CARAVAN_LEAVE = re.compile(r"merchants from .* have (embarked|left|departed)|caravan .* (left|departed)", re.I)
+CARAVAN_DAYS = 40       # the longest the goods are discounted without a departure report (the visits lasted 25-36 days)
+CARAVAN_LEFT = 3        # ... and after one, while the count still holds them (it fell within one to six days)
 
 def log(kind, **kw):
     print(json.dumps({"t": round(time.time(), 2), "kind": kind, **kw}, default=str), flush=True)
@@ -136,6 +147,9 @@ class Overseer(OpenPlayRules):
         self.office_fails = {}   # office zone id -> chair placements its site refused with no_space
         self.office_bad = set()  # office zone ids given up (OFFICE_FAILS refusals): never the manager's again
         self.office_bad_sites = set()   # site ids those offices stood on: no new office goes there
+        self.caravan = None      # merchants on the map: {"since": tick, "food": n, "drink": n} of their goods in stocks
+        self.caravan_seen = -10 ** 9   # tick of the last arrival taken, so the same report is not taken twice
+        self.prev_stock = None   # (food_edible, drink) as the game reported them on the previous observation
 
     def set_task(self, info):
         """Goal policies from the task's own public text (GET /task). A hands_off field means a lab task."""
@@ -192,6 +206,7 @@ class Overseer(OpenPlayRules):
         self.days_left = resp.get("days_left") if isinstance(resp.get("days_left"), int) else None
         self.day = resp.get("day")
         self.now = d(self.o.get("date")).get("abs_tick") or resp.get("tick") or 0
+        self.st = self.own_stocks(self.st)
         self.people = [x for x in lst(self.o.get("dwarves")) if isinstance(x, dict)]
         self.cit = self.adm.get("citizens") or len(self.people)
         self.sites = [s for s in lst(self.map.get("sites")) if isinstance(s, dict)]
@@ -221,6 +236,38 @@ class Overseer(OpenPlayRules):
         self.surface = self.map.get("surface_z")
         if isinstance(self.surface, int) and not isinstance(self.surface, bool):
             self.surface_seen = self.surface
+
+    def own_stocks(self, st):
+        """The stocks this layer plans from: the game's, less a visiting caravan's food and drink.
+
+        On the observation that first lists an arrival report (CARAVAN_ARRIVE), the goods are what food_edible and
+        drink rose by since the previous observation; that much is taken off both until the game's count falls
+        below it (the goods are gone), CARAVAN_LEFT days after a departure report, or after CARAVAN_DAYS. The game's
+        own figures are kept as food_reported and drink_reported. Nothing else in the stocks changes."""
+        food, drink = st.get("food_edible"), st.get("drink")
+        if not isinstance(food, int) or not isinstance(drink, int):
+            return st                 # no readable stocks: nothing to compare the next observation with either
+        texts = [str(d(e).get("text") if isinstance(e, dict) else e) for e in lst(self.o.get("recent_events"))]
+        prev, self.prev_stock = self.prev_stock, (food, drink)
+        c = self.caravan
+        if c is not None and c.get("left") is None and any(CARAVAN_LEAVE.search(t) for t in texts):
+            c["left"] = self.now      # the count can still hold the goods for a day or two after the report
+        if c is not None and (food < c["food"] or self.now - c["since"] > CARAVAN_DAYS * DAY
+                              or c.get("left") is not None and self.now - c["left"] > CARAVAN_LEFT * DAY):
+            log("caravan", event="gone", day=self.day, food=food, drink=drink, goods=c)
+            self.caravan = c = None
+        if c is None and prev is not None and self.now - self.caravan_seen > CARAVAN_DAYS * DAY \
+                and any(CARAVAN_ARRIVE.search(t) for t in texts) and not any(CARAVAN_LEAVE.search(t) for t in texts):
+            self.caravan = c = {"since": self.now, "food": max(0, food - prev[0]), "drink": max(0, drink - prev[1])}
+            self.caravan_seen = self.now
+            log("caravan", event="arrived", day=self.day, food=food, drink=drink, goods=c)
+        if c is None:
+            return st
+        own = dict(st)
+        own["food_reported"], own["drink_reported"] = food, drink
+        own["food_edible"] = max(0, food - c["food"])
+        own["drink"] = max(0, drink - c["drink"])
+        return own
 
     def kind(self, k):
         return [s for s in self.sites if s.get("kind") == k]
