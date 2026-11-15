@@ -1,3 +1,13 @@
+# The fort's own food while a caravan visits (Saad18819, on 0xplemonade's 4ef24bdd)
+
+This build is 0xplemonade's PR 198 harness (4ef24bdd, described below) with one addition from Saad18819's b3332eac.
+While merchants are on the map, stocks.food_edible and stocks.drink count their goods (0xplemonade's issue #125,
+discussion #173 item 1). `Overseer.own_stocks()`, called from `load()`, takes the jump seen on the arrival report off
+food and drink until the goods leave the count, up to 3 days after the departure report, or 40 days in all; the
+game's figures stay as `food_reported` and `drink_reported`. Tests: `tests/test_caravan.py`.
+
+---
+
 # No model: no meeting area below ground, the small animals eaten first again, crafts that stop at their target and four smaller fixes
 
 This is the promoted PR #124 harness (submission `65e60732`) with the model switched off as in PR #142
